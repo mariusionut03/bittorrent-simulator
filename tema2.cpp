@@ -3,24 +3,43 @@
 
 void *download_thread_func(void *arg)
 {
-    int rank = *(int*) arg;
+    DownloadThreadArgs* args = (DownloadThreadArgs*) arg;
+    int rank = args->rank;
+    std::vector<std::string> wantedFiles = args->wantedFiles;
 
-    /*  TODO: Ask TRACKER for info about the files peer wants
-        TODO: Ask again every 10 recieved segments */
+    for (const std::string& wantedFile : wantedFiles) {
+        int totalSegments = 100; // Assuming a fixed number of segments for simplicity
+        for (int segmentIndex = 0; segmentIndex < totalSegments; ++segmentIndex) {
+            
+            // Every 10 segments, request the swarmT from the tracker
+            if (segmentIndex % 10 == 0) {
+                int message_type = MSG_REQUEST_FILE;
+                MPI_Send(&message_type, 1, MPI_INT, TRACKER_RANK, 0, MPI_COMM_WORLD);
+                MPI_Send(wantedFile.c_str(), MAX_FILENAME, MPI_CHAR, TRACKER_RANK, 0, MPI_COMM_WORLD);
 
-    /*  TODO: Find Seed/peer for the current segment */
+                // Receive the list of peers that have the file
+                int num_users;
+                MPI_Recv(&num_users, 1, MPI_INT, TRACKER_RANK, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                std::vector<int> users(num_users);
+                MPI_Recv(users.data(), num_users, MPI_INT, TRACKER_RANK, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    /*  TODO: Send request to that seed/peed */
-    
-    /*  TODO: Recieve ACK from seed/peer */
-    
-    /*  TODO: Mark segment as recieved */
+                // Process the received swarmT information (e.g., update peer list)
+                std::cout << "Received swarmT for file " << wantedFile << " from tracker:\n";
+                for (int user : users) {
+                    std::cout << "  Peer: " << user << "\n";
+                }
+            }
+        }
 
-    /*  TODO: When file is completed, save all the hashes
-        in order in a file called client<RANK>_<FILENAME>*/
+        // After downloading all segments, notify the tracker
+        int message_type = MSG_FILE_COMPLETE;
+        MPI_Send(&message_type, 1, MPI_INT, TRACKER_RANK, 0, MPI_COMM_WORLD);
+        MPI_Send(wantedFile.c_str(), MAX_FILENAME, MPI_CHAR, TRACKER_RANK, 0, MPI_COMM_WORLD);
+    }
 
-    /*  TODO: When all files are recieved, announce the TRACKER
-        and close download thread */
+    // Notify the tracker that the peer has finished downloading all files
+    int message_type = MSG_FILE_COMPLETE_ALL;
+    MPI_Send(&message_type, 1, MPI_INT, TRACKER_RANK, 0, MPI_COMM_WORLD);
 
     return NULL;
 }
@@ -29,24 +48,43 @@ void *upload_thread_func(void *arg)
 {
     int rank = *(int*) arg;
 
-    /*  TODO: Wait for segment request, send ACK if found in list */
-
-    /*  TODO: Stop the thread if Tracker anounches everyone is finished */
-
     return NULL;
 }
 
 void tracker(int numtasks, int rank) {
-    /* TODO: Wait for initial lists from every user */
-    /* TODO: Mark the client as seeder in the file swarm */
-    /* TODO: After recieving from all the clients, send ACK to every one */
-    /* TODO: Recieve message and do something after checking the type: 
-        a. Cerere fisier / actualizare: Trimite datele acelui fisier
-        b. Finalizare descarcare: Trackerul marcheaza clientul ca seeder
-        c. Finalizare tot descarcare: Marcheaza client ca terminat
-        d. Toti clientii au terminat: Trimite mesaj de finalizare
-            la fiecare client si se opreste.
-    */
+    std::unordered_map<std::string, swarmT> swarmMap;
+    receiveDataFromPeers(numtasks, swarmMap);
+    printSwarmMap(swarmMap);
+
+    bool loopHold = true;
+
+    while (loopHold) {
+        MPI_Status status;
+        int message_type;
+        // Probe for an incoming message
+        MPI_Probe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+        // Receive the message type
+        MPI_Recv(&message_type, 1, MPI_INT, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        switch (message_type) {
+            case MSG_REQUEST_FILE:
+                std::cout << "REQUEST_FILE\n";
+                break;
+            case MSG_FILE_COMPLETE:
+                std::cout << "MSG_FILE_COMPLETE\n";
+                break;
+            case MSG_FILE_COMPLETE_ALL:
+                std::cout << "MSG_FILE_COMPLETE_ALL\n";
+                break;
+            case MSG_DOWNLOAD_END:
+                std::cout << "MSG_DOWNLOAD_END\n";
+                loopHold = false;
+                break;
+            default:
+                std::cout << "Unknown message from peer " << status.MPI_SOURCE << "\n";
+                break;
+        }
+    }
+    return;
 }
 
 void peer(int numtasks, int rank) {
@@ -62,13 +100,15 @@ void peer(int numtasks, int rank) {
     /* Citire fisiere de intrare (PEERs) */
     std::string filename = "tests/in" + std::to_string(rank) + ".txt";
     readFile(filename, fileMap, wantedFiles, rank);
-    printFileMap(fileMap);
 
-    /* TODO: Send data to TRACKER */
+    /* Send data to TRACKER and wait for ACK */
+    sendInitialData(fileMap, rank);
 
-    /* TODO: WAIT FOR ACK FROM TRACKER TO CONTINUE */
+    DownloadThreadArgs downloadArgs;
+    downloadArgs.rank = rank;
+    downloadArgs.wantedFiles = wantedFiles;
 
-    r = pthread_create(&download_thread, NULL, download_thread_func, (void *) &rank);
+    r = pthread_create(&download_thread, NULL, download_thread_func, (void *) &downloadArgs);
     if (r) {
         printf("Eroare la crearea thread-ului de download\n");
         exit(-1);
