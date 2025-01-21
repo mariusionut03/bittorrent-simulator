@@ -1,5 +1,12 @@
 build:
-	mpic++ -o tema2 tema2.cpp -pthread -Wall
+	mpic++ -o bittorrent bittorrent.cpp -pthread -Wall
 
 clean:
-	rm -rf tema3
+	rm -rf bittorrent
+
+run:
+	mpirun --oversubscribe -np 4 ./bittorrent
+
+clear-tests:
+	rm -r tests/input/*
+	rm -r tests/output/*
